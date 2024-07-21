@@ -11,10 +11,18 @@
 #include "adc.h"
 #include "epwm.h"
 #include "key.h"
+#include "math.h"
 #include "oled.h"
 #include "spi.h"
 #include "timer.h"
-#include "math.h"
+
+#pragma CODE_SECTION(TIM0_IRQn, "ramfuncs");
+#pragma CODE_SECTION(OLED_Update, "ramfuncs");
+
+extern Uint16 RamfuncsLoadStart;
+extern Uint16 RamfuncsLoadEnd;
+extern Uint16 RamfuncsRunStart;
+extern Uint16 RamfuncsLoadSize;
 
 // #define Kp 22.7089
 #define Kp 50.7089
@@ -50,7 +58,6 @@ extern float grid_voltage;
 float v_mod_graph[V_MOD_GRAPH];
 Uint8 v_mod_index = 0;
 
-
 void OLED_Update();
 void ftoa(float f, int precision);
 
@@ -68,6 +75,8 @@ void LED_Init(void) {
 }
 
 int main() {
+  memcpy(&RamfuncsRunStart, &RamfuncsLoadStart, (Uint32)&RamfuncsLoadSize);
+  InitFlash();
   InitSysCtrl();
   DINT;
   InitPieCtrl();
@@ -94,7 +103,8 @@ int main() {
   EPWM6_Init(MAX_CMPA);
   // EPWM7_Init(MAX_CMPA);
   // EPWM8_Init(MAX_CMPA);
-  EPwm1Regs.TBCTL.bit.SWFSYNC = 1; //
+  EPwm1Regs.TBCTL.bit.SWFSYNC = 1; 
+  
   EPwm5Regs.DBCTL.bit.POLSEL = DB_ACTV_HIC;
   EPwm6Regs.DBCTL.bit.POLSEL = DB_ACTV_HIC;
   // Set actions for rectifier
@@ -154,7 +164,6 @@ interrupt void TIM0_IRQn(void) {
   v_mod_graph[v_mod_index] = V_mod_inverter;
   v_mod_index = (v_mod_index + 1) % V_MOD_GRAPH;
 
-
   /********************* Current Loop ************************/
 
   if (flag_inverter != prev_flag_inverter) {
@@ -190,7 +199,6 @@ interrupt void TIM0_IRQn(void) {
   EPwm5Regs.CMPA.half.CMPA = compare1;
   EPwm6Regs.CMPA.half.CMPA = compare2;
 
-  
   EPWM2_DutyCycle = V_mod_inverter * MAX_CMPA / 2.0 + MAX_CMPA / 2.0;
   EPwm2Regs.CMPA.half.CMPA = (Uint16)EPWM2_DutyCycle;
 
