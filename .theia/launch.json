@@ -1,0 +1,11 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Double_inverter",
+            "type": "ccs-debug",
+            "request": "launch",
+            "project": "Double_inverter"
+        }
+    ]
+}
