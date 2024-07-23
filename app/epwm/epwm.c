@@ -60,10 +60,6 @@ void EPWM1_Init(Uint16 tbprd) {
   EPwm1Regs.DBRED = 10;
   EPwm1Regs.DBFED = 10;
 
-  EPwm1Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO; // Select INT on Zero event
-  EPwm1Regs.ETSEL.bit.INTEN = 1;            // Enable INT
-  EPwm1Regs.ETPS.bit.INTPRD = ET_1ST;       // Generate INT on 1st event
-
   EALLOW;
   SysCtrlRegs.PCLKCR0.bit.TBCLKSYNC = 1; // Start all the timers synced
   EDIS;
@@ -114,10 +110,6 @@ void EPWM2_Init(Uint16 tbprd) {
   EPwm2Regs.DBCTL.bit.IN_MODE = DBA_ALL;
   EPwm2Regs.DBRED = 10;
   EPwm2Regs.DBFED = 10;
-
-  EPwm2Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO; // Select INT on Zero event
-  EPwm2Regs.ETSEL.bit.INTEN = 1;            // Enable INT
-  EPwm2Regs.ETPS.bit.INTPRD = ET_1ST;       // Generate INT on 1st event
 
   EALLOW;
   SysCtrlRegs.PCLKCR0.bit.TBCLKSYNC = 1; // Start all the timers synced
@@ -170,10 +162,6 @@ void EPWM3_Init(Uint16 tbprd) {
   EPwm3Regs.DBRED = 10;
   EPwm3Regs.DBFED = 10;
 
-  EPwm3Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO; // Select INT on Zero event
-  EPwm3Regs.ETSEL.bit.INTEN = 1;            // Enable INT
-  EPwm3Regs.ETPS.bit.INTPRD = ET_1ST;       // Generate INT on 1st event
-
   EALLOW;
   SysCtrlRegs.PCLKCR0.bit.TBCLKSYNC = 1; // Start all the timers synced
   EDIS;
@@ -224,10 +212,6 @@ void EPWM4_Init(Uint16 tbprd) {
   EPwm4Regs.DBCTL.bit.IN_MODE = DBA_ALL;
   EPwm4Regs.DBRED = 10;
   EPwm4Regs.DBFED = 10;
-
-  EPwm4Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO; // Select INT on Zero event
-  EPwm4Regs.ETSEL.bit.INTEN = 1;            // Enable INT
-  EPwm4Regs.ETPS.bit.INTPRD = ET_1ST;       // Generate INT on 1st event
 
   EALLOW;
   SysCtrlRegs.PCLKCR0.bit.TBCLKSYNC = 1; // Start all the timers synced
@@ -280,9 +264,6 @@ void EPWM5_Init(Uint16 tbprd) {
   EPwm5Regs.DBRED = 10;
   EPwm5Regs.DBFED = 10;
 
-  EPwm5Regs.ETSEL.bit.INTSEL = ET_CTR_PRD; // Select INT on Zero event
-  EPwm5Regs.ETSEL.bit.INTEN = 1;            // Enable INT
-  EPwm5Regs.ETPS.bit.INTPRD = ET_1ST;       // Generate INT on 1st event
 
   EALLOW;
   SysCtrlRegs.PCLKCR0.bit.TBCLKSYNC = 1; // Start all the timers synced
@@ -335,9 +316,7 @@ void EPWM6_Init(Uint16 tbprd) {
   EPwm6Regs.DBRED = 10;
   EPwm6Regs.DBFED = 10;
 
-  EPwm6Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO; // Select INT on Zero event
-  EPwm6Regs.ETSEL.bit.INTEN = 1;            // Enable INT
-  EPwm6Regs.ETPS.bit.INTPRD = ET_1ST;       // Generate INT on 1st event
+
 
   EALLOW;
   SysCtrlRegs.PCLKCR0.bit.TBCLKSYNC = 1; // Start all the timers synced
@@ -390,9 +369,7 @@ void EPWM7_Init(Uint16 tbprd) {
   EPwm7Regs.DBRED = 10;
   EPwm7Regs.DBFED = 10;
 
-  EPwm7Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO; // Select INT on Zero event
-  EPwm7Regs.ETSEL.bit.INTEN = 1;            // Enable INT
-  EPwm7Regs.ETPS.bit.INTPRD = ET_1ST;       // Generate INT on 1st event
+
 
   EALLOW;
   SysCtrlRegs.PCLKCR0.bit.TBCLKSYNC = 1; // Start all the timers synced
@@ -445,49 +422,8 @@ void EPWM8_Init(Uint16 tbprd) {
   EPwm8Regs.DBRED = 10;
   EPwm8Regs.DBFED = 10;
 
-  EPwm8Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO; // Select INT on Zero event
-  EPwm8Regs.ETSEL.bit.INTEN = 1;            // Enable INT
-  EPwm8Regs.ETPS.bit.INTPRD = ET_1ST;       // Generate INT on 1st event
 
   EALLOW;
   SysCtrlRegs.PCLKCR0.bit.TBCLKSYNC = 1; // Start all the timers synced
   EDIS;
 }
-
-__interrupt void epwm5_timer_isr(void) {
-
-  static Uint16 index = 0;
-  static const float step = 2 * PI * SINE_FREQ / PWM_FREQ;
-  ref_voltage = sin(step * index) * VOLTAGE_PEAK * 1.414;
-  index++;
-  if (index >= (PWM_FREQ / SINE_FREQ)) {
-    index = 0;
-  }
-
-  //
-  // Clear INT flag for this timer
-  //
-  EPwm5Regs.ETCLR.bit.INT = 1;
-
-  //
-  // Acknowledge this interrupt to receive more interrupts from group 3
-  //
-  PieCtrlRegs.PIEACK.all = PIEACK_GROUP3;
-}
-
-// __interrupt void epwm8_timer_isr(void) {
-
-//   // Set Compare values
-//   EPwm8Regs.CMPA.half.CMPA = rectifier_dutycycle; // Set compare A value
-//   EPwm8Regs.CMPB = rectifier_dutycycle;           // Set Compare B value
-
-//   //
-//   // Clear INT flag for this timer
-//   //
-//   EPwm8Regs.ETCLR.bit.INT = 1;
-
-//   //
-//   // Acknowledge this interrupt to receive more interrupts from group 3
-//   //
-//   PieCtrlRegs.PIEACK.all = PIEACK_GROUP3;
-// }

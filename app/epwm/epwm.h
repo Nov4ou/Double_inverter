@@ -12,12 +12,11 @@
 #include "F2806x_Examples.h"        // F2806x Examples Headerfile
 
 #define PWM_TBPRD 4500 // 10kHz PWM frequency
-#define PWM_FREQ 10000 // 10kHz PWM frequency
-#define SINE_FREQ 49.80   // 50Hz sine wave frequency
+// #define PWM_FREQ 10000 // 10kHz PWM frequency
+#define PWM_FREQ 10204 // 10kHz PWM frequency
+#define SINE_FREQ 50.86   // 50Hz sine wave frequency
 #define MAX_CMPA 4500  // Maximum value for CMPA, should be same as TBPRD
 #define PI 3.14159265358979
-
-#define VOLTAGE_PEAK 25.6
 
 // #define PWM_TBPRD 1500 // 30kHz PWM frequency
 // #define PWM_FREQ 30000 // 30kHz PWM frequency

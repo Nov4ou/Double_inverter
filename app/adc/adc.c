@@ -18,7 +18,6 @@ Uint16 Voltage4[10];
 Uint8 index = 0;
 Uint16 grid_curr_index;
 
-
 float Vol1 = 0;
 
 float grid_voltage;
@@ -152,6 +151,8 @@ __interrupt void adc_isr(void) {
   grid_inverter_current = (Voltage4[ConversionCount] * 0.0016 - 2.9939) * 2;
   current_graph[curr_index] = grid_inverter_current;
   curr_index = (curr_index + 1) % CURR_GRAPH_INDEX;
+
+  
 
   grid_inverter_voltage = 0.0333 * Voltage1[ConversionCount] - 61.893;
   voltage_graph[vol_index] = grid_inverter_voltage;

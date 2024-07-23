@@ -22,10 +22,12 @@
 #define Ki 5000.0
 // #define ISR_FREQUENCY 20000
 #define GRID_FREQ 50
-#define ISR_FREQUENCY 10000
+#define ISR_FREQUENCY 10204
 #define V_DC_REFERENCE 40
 #define CURRENT_PEAK 2.2
+float VOLTAGE_PEAK = 26.1;
 
+float kpset = 9;
 
 _Bool flag_inverter = 0;
 _Bool prev_flag_inverter = 1;
@@ -53,6 +55,10 @@ extern float grid_inverter_voltage;
 extern float grid_inverter_current;
 extern float grid_voltage;
 
+extern float current_graph[300];
+float current_peak_value = 0;
+Uint8 i = 0;
+
 #define I_MOD_GRAPH 300
 float i_mod_graph[I_MOD_GRAPH];
 Uint8 i_mod_index = 0;
@@ -69,6 +75,8 @@ void PID_Init(PID *pid, float p, float i, float d, float maxI, float maxOut);
 void PID_Calc(PID *pid, float reference, float feedback);
 void OLED_Update();
 void ftoa(float f, int precision);
+__interrupt void cpu_timer1_isr(void);
+__interrupt void cpu_timer2_isr(void);
 
 void LED_Init(void) {
   EALLOW;
@@ -92,7 +100,8 @@ int main() {
   InitPieVectTable();
   EALLOW;
   PieVectTable.ADCINT1 = &adc_isr;
-  PieVectTable.EPWM5_INT = &epwm5_timer_isr;
+  PieVectTable.TINT2 = &cpu_timer2_isr;
+  PieVectTable.TINT1 = &cpu_timer1_isr;
   EDIS;
   InitAdc(); // For this example, init the ADC
   AdcOffsetSelfCal();
@@ -104,11 +113,6 @@ int main() {
   PieCtrlRegs.PIEIER8.bit.INTx1 = 1;
   IER |= M_INT8;
   EINT;
-
-  IER |= M_INT3;
-  PieCtrlRegs.PIEIER3.bit.INTx5 = 1;
-  EINT; // Enable Global interrupt INTM
-  ERTM; // Enable Global realtime interrupt DBGM
 
   ADC_Init();
 
@@ -136,7 +140,7 @@ int main() {
   OLED_Init();
   OLED_Clear();
 
-  PID_Init(&VoltageLoop, 0.1, 0.01, 0, 10, 10);
+  PID_Init(&VoltageLoop, 0.105, 0.01, 0, 10, 10);
   // SPLL_1ph_SOGI_F_init(GRID_FREQ, ((float)(1.0 / ISR_FREQUENCY)), &spll1);
   // SPLL_1ph_SOGI_F_coeff_update(((float)(1.0 / ISR_FREQUENCY)),
   //                              (float)(2 * PI * GRID_FREQ), &spll1);
@@ -144,7 +148,20 @@ int main() {
   // spll1.lpf_coeff.B0_lf = (float32)((2 * Kp + Ki / ISR_FREQUENCY) / 2);
   // spll1.lpf_coeff.B1_lf = (float32)(-(2 * Kp - Ki / ISR_FREQUENCY) / 2);
 
-  TIM0_Init(90, 101); // 10K
+  InitCpuTimers();
+  ConfigCpuTimer(&CpuTimer1, 90, 100);
+  ConfigCpuTimer(&CpuTimer2, 90, 100);
+  CpuTimer1Regs.TCR.all = 0x4000;
+  CpuTimer2Regs.TCR.all = 0x4000;
+  IER |= M_INT13;
+  IER |= M_INT14;
+  EINT; // Enable Global interrupt INTM
+  ERTM; // Enable Global realtime interrupt DBGM
+  // TIM0_Init(90, 101); // 10K
+  //
+  // Enable TINT0 in the PIE: Group 1 interrupt 7
+  //
+  PieCtrlRegs.PIEIER1.bit.INTx7 = 1;
 
   while (1) {
     OLED_Update();
@@ -155,11 +172,21 @@ int main() {
           ;
       }
     }
+    current_peak_value = -100;
+    for (i = 0; i < 300; i++) {
+      if (current_peak_value < current_graph[i])
+        current_peak_value = current_graph[i];
+    }
+    if (current_peak_value >= 2.121)
+      VOLTAGE_PEAK = 26.17;
+    if (current_peak_value < 2.121)
+      VOLTAGE_PEAK = 24.62;
   }
 }
 
-interrupt void TIM0_IRQn(void) {
+__interrupt void cpu_timer1_isr(void) {
   // GpioDataRegs.GPATOGGLE.bit.GPIO0 = 1;
+  // CpuTimer1.InterruptCount++;
   normalized_voltage = grid_voltage / 50;
   spll1.u[0] = normalized_voltage;
   SPLL_1ph_SOGI_F_FUNC(&spll1);
@@ -189,9 +216,9 @@ interrupt void TIM0_IRQn(void) {
     vol_loop_output1 = 6 * 1.414;
   if (vol_loop_output1 < -6 * 1.414)
     vol_loop_output1 = -6 * 1.414;
-  vol_loop_output2 = vol_loop_output1 - grid_inverter_current;
+  vol_loop_output2 = vol_loop_output1 - (grid_inverter_current - 0.2);
   V_mod_inverter =
-      (vol_loop_output2 * 6 + grid_inverter_voltage) / V_DC_REFERENCE;
+      (vol_loop_output2 * kpset + grid_inverter_voltage) / V_DC_REFERENCE;
   /********************* Voltage Loop ************************/
 
   if (flag_inverter != prev_flag_inverter) {
@@ -236,9 +263,28 @@ interrupt void TIM0_IRQn(void) {
   EPWM2_DutyCycle = V_mod_inverter * MAX_CMPA / 2.0 + MAX_CMPA / 2.0;
   EPwm2Regs.CMPA.half.CMPA = (Uint16)EPWM2_DutyCycle;
 
-  EALLOW;
-  PieCtrlRegs.PIEACK.bit.ACK1 = 1;
-  EDIS;
+  //
+  // The CPU acknowledges the interrupt
+  //
+  // EDIS;
+}
+
+__interrupt void cpu_timer2_isr(void) {
+
+  // GpioDataRegs.GPATOGGLE.bit.GPIO0 = 1;
+  // CpuTimer2.InterruptCount++;
+  static Uint16 index = 0;
+  static const float step = 2 * PI * SINE_FREQ / PWM_FREQ;
+  ref_voltage = sin(step * index) * VOLTAGE_PEAK * 1.414;
+  index++;
+  if (index >= (PWM_FREQ / SINE_FREQ)) {
+    index = 0;
+  }
+  // EALLOW;
+  // //
+  // // The CPU acknowledges the interrupt.
+  // //
+  // EDIS;
 }
 
 void PID_Init(PID *pid, float p, float i, float d, float maxI, float maxOut) {
