@@ -11,10 +11,10 @@
 #include "adc.h"
 #include "epwm.h"
 #include "key.h"
+#include "math.h"
 #include "oled.h"
 #include "spi.h"
 #include "timer.h"
-#include "math.h"
 
 // #define Kp 22.7089
 #define Kp 50.7089
@@ -26,6 +26,7 @@
 #define V_DC_REFERENCE 40
 #define CURRENT_PEAK 2.2
 
+
 _Bool flag_inverter = 0;
 _Bool prev_flag_inverter = 1;
 
@@ -34,23 +35,38 @@ char str[10];
 float EPWM2_DutyCycle = 0;
 float normalized_voltage = 0;
 float compare1, compare2;
-float V_mod_inverter = 0;
 float ratio = 0.7;
 Uint16 counter = 0;
 float ref_current = 0;
-float error = 0;
-float output = 0;
+float curr_error = 0;
+float curr_loop_out = 0;
 float Kp_set = 12;
+float I_mod_inverter = 0;
+
+float ref_voltage = 0;
+float vol_error = 0;
+float vol_loop_output1 = 0;
+float vol_loop_output2 = 0;
+float V_mod_inverter = 0;
 
 extern float grid_inverter_voltage;
 extern float grid_inverter_current;
 extern float grid_voltage;
 
-#define V_MOD_GRAPH 300
-float v_mod_graph[V_MOD_GRAPH];
-Uint8 v_mod_index = 0;
+#define I_MOD_GRAPH 300
+float i_mod_graph[I_MOD_GRAPH];
+Uint8 i_mod_index = 0;
 
+typedef struct {
+  float kp, ki, kd;
+  float error, lastError;
+  float integral, maxIntegral;
+  float output, maxOutput;
+} PID;
+PID VoltageLoop;
 
+void PID_Init(PID *pid, float p, float i, float d, float maxI, float maxOut);
+void PID_Calc(PID *pid, float reference, float feedback);
 void OLED_Update();
 void ftoa(float f, int precision);
 
@@ -76,6 +92,7 @@ int main() {
   InitPieVectTable();
   EALLOW;
   PieVectTable.ADCINT1 = &adc_isr;
+  PieVectTable.EPWM5_INT = &epwm5_timer_isr;
   EDIS;
   InitAdc(); // For this example, init the ADC
   AdcOffsetSelfCal();
@@ -84,6 +101,14 @@ int main() {
   IER |= M_INT1;                     // Enable CPU Interrupt 1
   EINT;
   ERTM;
+  PieCtrlRegs.PIEIER8.bit.INTx1 = 1;
+  IER |= M_INT8;
+  EINT;
+
+  IER |= M_INT3;
+  PieCtrlRegs.PIEIER3.bit.INTx5 = 1;
+  EINT; // Enable Global interrupt INTM
+  ERTM; // Enable Global realtime interrupt DBGM
 
   ADC_Init();
 
@@ -94,7 +119,7 @@ int main() {
   EPWM6_Init(MAX_CMPA);
   // EPWM7_Init(MAX_CMPA);
   // EPWM8_Init(MAX_CMPA);
-  EPwm1Regs.TBCTL.bit.SWFSYNC = 1; //
+  EPwm1Regs.TBCTL.bit.SWFSYNC = 1;
   EPwm5Regs.DBCTL.bit.POLSEL = DB_ACTV_HIC;
   EPwm6Regs.DBCTL.bit.POLSEL = DB_ACTV_HIC;
   // Set actions for rectifier
@@ -111,12 +136,13 @@ int main() {
   OLED_Init();
   OLED_Clear();
 
-  SPLL_1ph_SOGI_F_init(GRID_FREQ, ((float)(1.0 / ISR_FREQUENCY)), &spll1);
-  SPLL_1ph_SOGI_F_coeff_update(((float)(1.0 / ISR_FREQUENCY)),
-                               (float)(2 * PI * GRID_FREQ), &spll1);
-  spll1.osg_coeff.osg_k = 1.0;
-  spll1.lpf_coeff.B0_lf = (float32)((2 * Kp + Ki / ISR_FREQUENCY) / 2);
-  spll1.lpf_coeff.B1_lf = (float32)(-(2 * Kp - Ki / ISR_FREQUENCY) / 2);
+  PID_Init(&VoltageLoop, 0.1, 0.01, 0, 10, 10);
+  // SPLL_1ph_SOGI_F_init(GRID_FREQ, ((float)(1.0 / ISR_FREQUENCY)), &spll1);
+  // SPLL_1ph_SOGI_F_coeff_update(((float)(1.0 / ISR_FREQUENCY)),
+  //                              (float)(2 * PI * GRID_FREQ), &spll1);
+  // spll1.osg_coeff.osg_k = 1.0;
+  // spll1.lpf_coeff.B0_lf = (float32)((2 * Kp + Ki / ISR_FREQUENCY) / 2);
+  // spll1.lpf_coeff.B1_lf = (float32)(-(2 * Kp - Ki / ISR_FREQUENCY) / 2);
 
   TIM0_Init(90, 101); // 10K
 
@@ -133,7 +159,7 @@ int main() {
 }
 
 interrupt void TIM0_IRQn(void) {
-  GpioDataRegs.GPATOGGLE.bit.GPIO0 = 1;
+  // GpioDataRegs.GPATOGGLE.bit.GPIO0 = 1;
   normalized_voltage = grid_voltage / 50;
   spll1.u[0] = normalized_voltage;
   SPLL_1ph_SOGI_F_FUNC(&spll1);
@@ -142,20 +168,31 @@ interrupt void TIM0_IRQn(void) {
   spll1.osg_coeff.osg_k = 1.0;
 
   /********************* Open Loop Test ************************/
-  // V_mod_inverter = sin(spll1.theta[0]) * ratio;
+  // I = sin(spll1.theta[0]) * ratio;
   /********************* Open Loop Test ************************/
 
   /********************* Current Loop ************************/
-  ref_current = sin(spll1.theta[0]) * CURRENT_PEAK * 1.414;
-  error = ref_current - grid_inverter_current;
-  output = Kp_set * error + grid_inverter_voltage;
-  V_mod_inverter = output / V_DC_REFERENCE;
+  // ref_current = sin(spll1.theta[0]) * CURRENT_PEAK * 1.414;
+  // curr_error = ref_current - grid_inverter_current;
+  // curr_loop_out = Kp_set * curr_error + grid_inverter_voltage;
+  // I_mod_inverter = curr_loop_out / V_DC_REFERENCE;
 
-  v_mod_graph[v_mod_index] = V_mod_inverter;
-  v_mod_index = (v_mod_index + 1) % V_MOD_GRAPH;
-
-
+  // i_mod_graph[i_mod_index] = I_mod_inverter;
+  // i_mod_index = (i_mod_index + 1) % I_MOD_GRAPH;
   /********************* Current Loop ************************/
+
+  /********************* Voltage Loop ************************/
+  // ref_voltage = sin(spll1.theta[0]) * VOLTAGE_PEAK * 1.414;
+  PID_Calc(&VoltageLoop, ref_voltage, grid_inverter_voltage);
+  vol_loop_output1 = VoltageLoop.output;
+  if (vol_loop_output1 > 6 * 1.414)
+    vol_loop_output1 = 6 * 1.414;
+  if (vol_loop_output1 < -6 * 1.414)
+    vol_loop_output1 = -6 * 1.414;
+  vol_loop_output2 = vol_loop_output1 - grid_inverter_current;
+  V_mod_inverter =
+      (vol_loop_output2 * 6 + grid_inverter_voltage) / V_DC_REFERENCE;
+  /********************* Voltage Loop ************************/
 
   if (flag_inverter != prev_flag_inverter) {
     if (flag_inverter == 0) {
@@ -170,7 +207,8 @@ interrupt void TIM0_IRQn(void) {
       EPwm6Regs.AQCTLA.bit.CAU = AQ_NO_ACTION;
       EPwm6Regs.AQCTLA.bit.CAD = AQ_NO_ACTION;
     } else if (flag_inverter == 1) {
-      /********************* Inverter SPWM modulation ************************/
+      /********************* Inverter SPWM modulation
+       * ************************/
       EPwm5Regs.DBCTL.bit.POLSEL = DB_ACTV_HIC;
       EPwm6Regs.DBCTL.bit.POLSEL = DB_ACTV_HIC;
       // Set actions for inverter
@@ -181,22 +219,55 @@ interrupt void TIM0_IRQn(void) {
       EPwm6Regs.AQCTLA.bit.ZRO = AQ_NO_ACTION;
       EPwm6Regs.AQCTLA.bit.CAU = AQ_CLEAR;
       EPwm6Regs.AQCTLA.bit.CAD = AQ_SET;
-      /********************* Inverter SPWM modulation ************************/
+      /********************* Inverter SPWM modulation
+       * ************************/
     }
     prev_flag_inverter = flag_inverter;
   }
+  // Current Loop
+  // compare1 = (Uint16)(I_mod_inverter * MAX_CMPA);
+  // compare2 = (Uint16)(-1 * I_mod_inverter * MAX_CMPA);
+  // Voltage Loop
   compare1 = (Uint16)(V_mod_inverter * MAX_CMPA);
   compare2 = (Uint16)(-1 * V_mod_inverter * MAX_CMPA);
   EPwm5Regs.CMPA.half.CMPA = compare1;
   EPwm6Regs.CMPA.half.CMPA = compare2;
 
-  
   EPWM2_DutyCycle = V_mod_inverter * MAX_CMPA / 2.0 + MAX_CMPA / 2.0;
   EPwm2Regs.CMPA.half.CMPA = (Uint16)EPWM2_DutyCycle;
 
   EALLOW;
   PieCtrlRegs.PIEACK.bit.ACK1 = 1;
   EDIS;
+}
+
+void PID_Init(PID *pid, float p, float i, float d, float maxI, float maxOut) {
+  pid->kp = p;
+  pid->ki = i;
+  pid->kd = d;
+  pid->maxIntegral = maxI;
+  pid->maxOutput = maxOut;
+  pid->error = 0;
+  pid->lastError = 0;
+  pid->integral = 0;
+  pid->output = 0;
+}
+
+void PID_Calc(PID *pid, float reference, float feedback) {
+  pid->lastError = pid->error;
+  pid->error = reference - feedback;
+  float dout = (pid->error - pid->lastError) * pid->kd;
+  float pout = pid->error * pid->kp;
+  pid->integral += pid->error * pid->ki;
+  if (pid->integral > pid->maxIntegral)
+    pid->integral = pid->maxIntegral;
+  else if (pid->integral < -pid->maxIntegral)
+    pid->integral = -pid->maxIntegral;
+  pid->output = pout + dout + pid->integral;
+  if (pid->output > pid->maxOutput)
+    pid->output = pid->maxOutput;
+  else if (pid->output < -pid->maxOutput)
+    pid->output = -pid->maxOutput;
 }
 
 void OLED_Update() {

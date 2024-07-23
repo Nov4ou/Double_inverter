@@ -5,14 +5,14 @@
  *      Author: nov4ou
  */
 #include "epwm.h"
-#include "F2806x_Device.h"
-#include "F2806x_EPwm_defines.h"
+#include "math.h"
 
 float rectifier_dutycycle = 0;
 extern float ref_sinwave;
 Uint16 sineValue1 = 0, sineValue2 = 0;
 extern _Bool flag;
-float i_ref_rt;
+extern float ref_current;
+extern float ref_voltage;
 
 void EPWM1_Init(Uint16 tbprd) {
   EALLOW;
@@ -280,7 +280,7 @@ void EPWM5_Init(Uint16 tbprd) {
   EPwm5Regs.DBRED = 10;
   EPwm5Regs.DBFED = 10;
 
-  EPwm5Regs.ETSEL.bit.INTSEL = ET_CTR_ZERO; // Select INT on Zero event
+  EPwm5Regs.ETSEL.bit.INTSEL = ET_CTR_PRD; // Select INT on Zero event
   EPwm5Regs.ETSEL.bit.INTEN = 1;            // Enable INT
   EPwm5Regs.ETPS.bit.INTPRD = ET_1ST;       // Generate INT on 1st event
 
@@ -453,43 +453,21 @@ void EPWM8_Init(Uint16 tbprd) {
   SysCtrlRegs.PCLKCR0.bit.TBCLKSYNC = 1; // Start all the timers synced
   EDIS;
 }
-__interrupt void epwm7_timer_isr(void) {
 
-  // static Uint16 index = 0;
-  // static const float step = 2 * PI * SINE_FREQ / PWM_FREQ;
-  // i_ref_rt = (1 + sin(step * index)) * 10;
-  // index++;
-  // if (index >= (PWM_FREQ / SINE_FREQ)) {
-  //   index = 0;
-  // }
+__interrupt void epwm5_timer_isr(void) {
 
-  // if (flag == 1) {
-  // EPwm8Regs.TBCTL.bit.CTRMODE = TB_COUNT_UP; // Count up
-  //                                            // Set actions
-
-  // // EPwm8Regs.AQCTLB.bit.ZRO = AQ_SET;   // Set PWM1B on Zero
-  // // EPwm8Regs.AQCTLB.bit.CBU = AQ_CLEAR; // Clear PWM1B on event B, up count
-
-  // if (ref_sinwave > 0) {
-  //   EPwm8Regs.AQCTLA.bit.ZRO = AQ_SET; // Set PWM1A on Zero
-  //   EPwm8Regs.AQCTLA.bit.CAU = AQ_SET; // Clear PWM1A on event A, up count
-  //   sineValue1 = (Uint16)(ref_sinwave * MAX_CMPA);
-  //   EPwm7Regs.CMPA.half.CMPA = sineValue1;
-  //   EPwm8Regs.CMPA.half.CMPA = MAX_CMPA;
-  // }
-  // if (ref_sinwave <= 0) {
-  //   EPwm8Regs.AQCTLA.bit.ZRO = AQ_CLEAR; // Set PWM1A on Zero
-  //   EPwm8Regs.AQCTLA.bit.CAU = AQ_CLEAR; // Clear PWM1A on event A, up count
-  //   sineValue2 = (Uint16)(MAX_CMPA - (-1 * ref_sinwave * MAX_CMPA));
-  //   EPwm7Regs.CMPA.half.CMPA = sineValue2;
-  //   EPwm8Regs.CMPA.half.CMPA = 0;
-  // }
-  // }
+  static Uint16 index = 0;
+  static const float step = 2 * PI * SINE_FREQ / PWM_FREQ;
+  ref_voltage = sin(step * index) * VOLTAGE_PEAK * 1.414;
+  index++;
+  if (index >= (PWM_FREQ / SINE_FREQ)) {
+    index = 0;
+  }
 
   //
   // Clear INT flag for this timer
   //
-  EPwm7Regs.ETCLR.bit.INT = 1;
+  EPwm5Regs.ETCLR.bit.INT = 1;
 
   //
   // Acknowledge this interrupt to receive more interrupts from group 3
