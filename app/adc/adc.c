@@ -29,7 +29,7 @@ float grid_inverter_voltage;
 float voltage_graph[VOL_GRAPH_INDEX];
 Uint8 vol_index = 0;
 
-#define CURR_GRAPH_INDEX 300
+#define CURR_GRAPH_INDEX 500
 float current_graph[CURR_GRAPH_INDEX];
 Uint8 curr_index = 0;
 

@@ -16,24 +16,37 @@
 #include "spi.h"
 #include "timer.h"
 
+extern Uint16 RamfuncsLoadStart;
+extern Uint16 RamfuncsLoadEnd;
+extern Uint16 RamfuncsRunStart;
+extern Uint16 RamfuncsLoadSize;
+
+#pragma CODE_SECTION(cpu_timer1_isr, "ramfuncs");
+#pragma CODE_SECTION(cpu_timer2_isr, "ramfuncs");
+#pragma CODE_SECTION(OLED_Update, "ramfuncs");
+
 // #define Kp 22.7089
 #define Kp 50.7089
 // #define Ki 1063.14
 #define Ki 5000.0
-// #define ISR_FREQUENCY 20000
+#define ISR_FREQUENCY 20200
 #define GRID_FREQ 50
-#define ISR_FREQUENCY 10204
+// #define ISR_FREQUENCY 10204
 #define V_DC_REFERENCE 40
-#define CURRENT_PEAK 2.2
-float VOLTAGE_PEAK = 26.1;
+float CURRENT_PEAK = 2.15;
+float VOLTAGE_PEAK = 24;
 
-float kpset = 9;
+float kpset = 7.5;
 
 _Bool flag_inverter = 0;
 _Bool prev_flag_inverter = 1;
+_Bool flag_grid_connection = 0;
+_Bool prev_flag_grid_connection = 1;
+_Bool open_loop = 0;
+_Bool prev_open_loop = 1;
 
 SPLL_1ph_SOGI_F spll1;
-char str[10];
+Uint8 str[10];
 float EPWM2_DutyCycle = 0;
 float normalized_voltage = 0;
 float compare1, compare2;
@@ -50,6 +63,7 @@ float vol_error = 0;
 float vol_loop_output1 = 0;
 float vol_loop_output2 = 0;
 float V_mod_inverter = 0;
+float Open_mod_inverter = 0;
 
 extern float grid_inverter_voltage;
 extern float grid_inverter_current;
@@ -92,6 +106,8 @@ void LED_Init(void) {
 }
 
 int main() {
+  memcpy(&RamfuncsRunStart, &RamfuncsLoadStart, (Uint32)&RamfuncsLoadSize);
+  InitFlash();
   InitSysCtrl();
   DINT;
   InitPieCtrl();
@@ -141,15 +157,15 @@ int main() {
   OLED_Clear();
 
   PID_Init(&VoltageLoop, 0.105, 0.01, 0, 10, 10);
-  // SPLL_1ph_SOGI_F_init(GRID_FREQ, ((float)(1.0 / ISR_FREQUENCY)), &spll1);
-  // SPLL_1ph_SOGI_F_coeff_update(((float)(1.0 / ISR_FREQUENCY)),
-  //                              (float)(2 * PI * GRID_FREQ), &spll1);
-  // spll1.osg_coeff.osg_k = 1.0;
-  // spll1.lpf_coeff.B0_lf = (float32)((2 * Kp + Ki / ISR_FREQUENCY) / 2);
-  // spll1.lpf_coeff.B1_lf = (float32)(-(2 * Kp - Ki / ISR_FREQUENCY) / 2);
+  SPLL_1ph_SOGI_F_init(GRID_FREQ, ((float)(1.0 / ISR_FREQUENCY)), &spll1);
+  SPLL_1ph_SOGI_F_coeff_update(((float)(1.0 / ISR_FREQUENCY)),
+                               (float)(2 * PI * GRID_FREQ), &spll1);
+  spll1.osg_coeff.osg_k = 1.0;
+  spll1.lpf_coeff.B0_lf = (float32)((2 * Kp + Ki / ISR_FREQUENCY) / 2);
+  spll1.lpf_coeff.B1_lf = (float32)(-(2 * Kp - Ki / ISR_FREQUENCY) / 2);
 
   InitCpuTimers();
-  ConfigCpuTimer(&CpuTimer1, 90, 100);
+  ConfigCpuTimer(&CpuTimer1, 90, 50);
   ConfigCpuTimer(&CpuTimer2, 90, 100);
   CpuTimer1Regs.TCR.all = 0x4000;
   CpuTimer2Regs.TCR.all = 0x4000;
@@ -171,21 +187,49 @@ int main() {
         while (KEY_Read() == 2)
           ;
       }
+      if (KEY_Read() == 1) {
+        flag_grid_connection = 1 - flag_grid_connection;
+        while (KEY_Read() == 1)
+          ;
+      }
+      if (KEY_Read() == 3) {
+        open_loop = 1 - open_loop;
+        flag_inverter = 0;
+        flag_grid_connection = 0;
+        while (KEY_Read() == 3)
+          ;
+      }
+      if (KEY_Read() == 4) {
+        CURRENT_PEAK += 0.1;
+        if (CURRENT_PEAK > 2.15)
+          CURRENT_PEAK = 2.15;
+        while (KEY_Read() == 4)
+          ;
+      }
+      if (KEY_Read() == 5) {
+        CURRENT_PEAK -= 0.1;
+        if (CURRENT_PEAK < 1.15)
+          CURRENT_PEAK = 1.15;
+        while (KEY_Read() == 5)
+          ;
+      }
     }
     current_peak_value = -100;
-    for (i = 0; i < 300; i++) {
+    for (i = 0; i < 500; i++) {
       if (current_peak_value < current_graph[i])
         current_peak_value = current_graph[i];
     }
-    if (current_peak_value >= 2.121)
-      VOLTAGE_PEAK = 26.17;
-    if (current_peak_value < 2.121)
-      VOLTAGE_PEAK = 24.62;
+    // if (current_peak_value >= 2.121)
+    //   VOLTAGE_PEAK = 26.17;
+    // if (current_peak_value < 2.121)
+    //   VOLTAGE_PEAK = 24.62;
+    // if (current_peak_value < 0.5)
+    //   VOLTAGE_PEAK = 23.52;
   }
 }
 
 __interrupt void cpu_timer1_isr(void) {
-  // GpioDataRegs.GPATOGGLE.bit.GPIO0 = 1;
+  GpioDataRegs.GPATOGGLE.bit.GPIO0 = 1;
   // CpuTimer1.InterruptCount++;
   normalized_voltage = grid_voltage / 50;
   spll1.u[0] = normalized_voltage;
@@ -199,14 +243,52 @@ __interrupt void cpu_timer1_isr(void) {
   /********************* Open Loop Test ************************/
 
   /********************* Current Loop ************************/
-  // ref_current = sin(spll1.theta[0]) * CURRENT_PEAK * 1.414;
-  // curr_error = ref_current - grid_inverter_current;
-  // curr_loop_out = Kp_set * curr_error + grid_inverter_voltage;
-  // I_mod_inverter = curr_loop_out / V_DC_REFERENCE;
+  ref_current = sin(spll1.theta[0] + 0.15) * CURRENT_PEAK * 1.414;
+  curr_error = ref_current - grid_inverter_current;
+  curr_loop_out = Kp_set * curr_error + grid_inverter_voltage;
+  I_mod_inverter = curr_loop_out / V_DC_REFERENCE;
 
-  // i_mod_graph[i_mod_index] = I_mod_inverter;
-  // i_mod_index = (i_mod_index + 1) % I_MOD_GRAPH;
+  i_mod_graph[i_mod_index] = I_mod_inverter;
+  i_mod_index = (i_mod_index + 1) % I_MOD_GRAPH;
   /********************* Current Loop ************************/
+
+  if (flag_grid_connection != prev_flag_grid_connection) {
+    if (flag_grid_connection == 0) {
+      EPwm5Regs.DBCTL.bit.POLSEL = DB_ACTV_HI;
+      EPwm6Regs.DBCTL.bit.POLSEL = DB_ACTV_HI;
+      // Set actions for rectifier
+      EPwm5Regs.AQCTLA.bit.ZRO = AQ_CLEAR;
+      EPwm5Regs.AQCTLA.bit.CAU = AQ_NO_ACTION;
+      EPwm5Regs.AQCTLA.bit.CAD = AQ_NO_ACTION;
+      // Set actions for rectifier
+      EPwm6Regs.AQCTLA.bit.ZRO = AQ_CLEAR;
+      EPwm6Regs.AQCTLA.bit.CAU = AQ_NO_ACTION;
+      EPwm6Regs.AQCTLA.bit.CAD = AQ_NO_ACTION;
+    } else if (flag_grid_connection == 1) {
+      /********************* Inverter SPWM modulation *************************/
+      // Active Low PWMs - Setup Deadband
+      EPwm5Regs.DBCTL.bit.OUT_MODE = DB_FULL_ENABLE;
+      EPwm5Regs.DBCTL.bit.POLSEL = DB_ACTV_HIC;
+      EPwm5Regs.DBCTL.bit.IN_MODE = DBA_ALL;
+      EPwm5Regs.DBRED = 50;
+      EPwm5Regs.DBFED = 50;
+      EPwm6Regs.DBCTL.bit.OUT_MODE = DB_FULL_ENABLE;
+      EPwm6Regs.DBCTL.bit.POLSEL = DB_ACTV_HIC;
+      EPwm6Regs.DBCTL.bit.IN_MODE = DBA_ALL;
+      EPwm6Regs.DBRED = 50;
+      EPwm6Regs.DBFED = 50;
+      // Set actions for inverter
+      EPwm5Regs.AQCTLA.bit.ZRO = AQ_NO_ACTION;
+      EPwm5Regs.AQCTLA.bit.CAU = AQ_CLEAR;
+      EPwm5Regs.AQCTLA.bit.CAD = AQ_SET;
+      // Set actions for inverter
+      EPwm6Regs.AQCTLA.bit.ZRO = AQ_NO_ACTION;
+      EPwm6Regs.AQCTLA.bit.CAU = AQ_CLEAR;
+      EPwm6Regs.AQCTLA.bit.CAD = AQ_SET;
+      /********************* Inverter SPWM modulation *************************/
+    }
+    prev_flag_grid_connection = flag_grid_connection;
+  }
 
   /********************* Voltage Loop ************************/
   // ref_voltage = sin(spll1.theta[0]) * VOLTAGE_PEAK * 1.414;
@@ -234,6 +316,48 @@ __interrupt void cpu_timer1_isr(void) {
       EPwm6Regs.AQCTLA.bit.CAU = AQ_NO_ACTION;
       EPwm6Regs.AQCTLA.bit.CAD = AQ_NO_ACTION;
     } else if (flag_inverter == 1) {
+
+      /********************* Inverter SPWM modulation
+       * ************************/
+      // Active Low PWMs - Setup Deadband
+      EPwm5Regs.DBCTL.bit.OUT_MODE = DB_FULL_ENABLE;
+      EPwm5Regs.DBCTL.bit.POLSEL = DB_ACTV_HIC;
+      EPwm5Regs.DBCTL.bit.IN_MODE = DBA_ALL;
+      EPwm5Regs.DBRED = 50;
+      EPwm5Regs.DBFED = 50;
+      EPwm6Regs.DBCTL.bit.OUT_MODE = DB_FULL_ENABLE;
+      EPwm6Regs.DBCTL.bit.POLSEL = DB_ACTV_HIC;
+      EPwm6Regs.DBCTL.bit.IN_MODE = DBA_ALL;
+      EPwm6Regs.DBRED = 50;
+      EPwm6Regs.DBFED = 50;
+      // Set actions for inverter
+      EPwm5Regs.AQCTLA.bit.ZRO = AQ_NO_ACTION;
+      EPwm5Regs.AQCTLA.bit.CAU = AQ_CLEAR;
+      EPwm5Regs.AQCTLA.bit.CAD = AQ_SET;
+      // Set actions for inverter
+      EPwm6Regs.AQCTLA.bit.ZRO = AQ_NO_ACTION;
+      EPwm6Regs.AQCTLA.bit.CAU = AQ_CLEAR;
+      EPwm6Regs.AQCTLA.bit.CAD = AQ_SET;
+      /********************* Inverter SPWM modulation
+       * ************************/
+    }
+    prev_flag_inverter = flag_inverter;
+  }
+
+  if (open_loop != prev_open_loop) {
+    if (open_loop == 0) {
+      EPwm5Regs.DBCTL.bit.POLSEL = DB_ACTV_HI;
+      EPwm6Regs.DBCTL.bit.POLSEL = DB_ACTV_HI;
+      // Set actions for rectifier
+      EPwm5Regs.AQCTLA.bit.ZRO = AQ_CLEAR;
+      EPwm5Regs.AQCTLA.bit.CAU = AQ_NO_ACTION;
+      EPwm5Regs.AQCTLA.bit.CAD = AQ_NO_ACTION;
+      // Set actions for rectifier
+      EPwm6Regs.AQCTLA.bit.ZRO = AQ_CLEAR;
+      EPwm6Regs.AQCTLA.bit.CAU = AQ_NO_ACTION;
+      EPwm6Regs.AQCTLA.bit.CAD = AQ_NO_ACTION;
+    } else if (open_loop == 1) {
+
       /********************* Inverter SPWM modulation
        * ************************/
       EPwm5Regs.DBCTL.bit.POLSEL = DB_ACTV_HIC;
@@ -249,19 +373,40 @@ __interrupt void cpu_timer1_isr(void) {
       /********************* Inverter SPWM modulation
        * ************************/
     }
-    prev_flag_inverter = flag_inverter;
+    prev_open_loop = open_loop;
   }
-  // Current Loop
-  // compare1 = (Uint16)(I_mod_inverter * MAX_CMPA);
-  // compare2 = (Uint16)(-1 * I_mod_inverter * MAX_CMPA);
-  // Voltage Loop
-  compare1 = (Uint16)(V_mod_inverter * MAX_CMPA);
-  compare2 = (Uint16)(-1 * V_mod_inverter * MAX_CMPA);
-  EPwm5Regs.CMPA.half.CMPA = compare1;
-  EPwm6Regs.CMPA.half.CMPA = compare2;
 
-  EPWM2_DutyCycle = V_mod_inverter * MAX_CMPA / 2.0 + MAX_CMPA / 2.0;
-  EPwm2Regs.CMPA.half.CMPA = (Uint16)EPWM2_DutyCycle;
+  if (open_loop == 1) {
+    Open_mod_inverter = ref_voltage / 50;
+    // Open Loop
+    compare1 = (Uint16)(Open_mod_inverter * MAX_CMPA);
+    compare2 = (Uint16)(-1 * Open_mod_inverter * MAX_CMPA);
+    EPwm5Regs.CMPA.half.CMPA = compare1;
+    EPwm6Regs.CMPA.half.CMPA = compare2;
+
+    EPWM2_DutyCycle = Open_mod_inverter * MAX_CMPA / 2.0 + MAX_CMPA / 2.0;
+    EPwm2Regs.CMPA.half.CMPA = (Uint16)EPWM2_DutyCycle;
+  }
+  if (flag_grid_connection == 1) {
+    // Current Loop
+    compare1 = (Uint16)(I_mod_inverter * MAX_CMPA);
+    compare2 = (Uint16)(-1 * I_mod_inverter * MAX_CMPA);
+    EPwm5Regs.CMPA.half.CMPA = compare1;
+    EPwm6Regs.CMPA.half.CMPA = compare2;
+
+    EPWM2_DutyCycle = I_mod_inverter * MAX_CMPA / 2.0 + MAX_CMPA / 2.0;
+    EPwm2Regs.CMPA.half.CMPA = (Uint16)EPWM2_DutyCycle;
+  }
+  if (flag_inverter == 1) {
+    // Voltage Loop
+    compare1 = (Uint16)(V_mod_inverter * MAX_CMPA);
+    compare2 = (Uint16)(-1 * V_mod_inverter * MAX_CMPA);
+    EPwm5Regs.CMPA.half.CMPA = compare1;
+    EPwm6Regs.CMPA.half.CMPA = compare2;
+
+    EPWM2_DutyCycle = V_mod_inverter * MAX_CMPA / 2.0 + MAX_CMPA / 2.0;
+    EPwm2Regs.CMPA.half.CMPA = (Uint16)EPWM2_DutyCycle;
+  }
 
   //
   // The CPU acknowledges the interrupt
@@ -318,7 +463,7 @@ void PID_Calc(PID *pid, float reference, float feedback) {
 
 void OLED_Update() {
   counter++;
-  if (counter == 50000) {
+  if (counter == 5000) {
     OLED_ShowString(0, 0, "Inverter: ", 16);
     if (flag_inverter == 1) {
       OLED_ShowString(75, 0, "    1", 16);
@@ -326,12 +471,12 @@ void OLED_Update() {
       OLED_ShowString(75, 0, "    0", 16);
     }
 
-    // OLED_ShowString(0, 2, "Rectifier: ", 16);
-    // if (flag_rectifier == 1) {
-    //   OLED_ShowString(83, 2, "   1", 16);
-    // } else {
-    //   OLED_ShowString(83, 2, "   0", 16);
-    // }
+    OLED_ShowString(0, 2, "Grid Connect: ", 16);
+    if (flag_grid_connection == 1) {
+      OLED_ShowString(83, 2, "   1", 16);
+    } else {
+      OLED_ShowString(83, 2, "   0", 16);
+    }
 
     // OLED_ShowString(0, 4, "K_RLC: ", 8);
     // if (K_RLC == 1) {
@@ -340,9 +485,9 @@ void OLED_Update() {
     //   OLED_ShowString(75, 4, "    -1", 8);
     // }
 
-    // OLED_ShowString(0, 5, "Power factor: ", 8);
-    // ftoa(power_factor, 1);
-    // OLED_ShowString(95, 6, str, 4);
+    OLED_ShowString(0, 5, "Current Peak: ", 8);
+    ftoa(CURRENT_PEAK - 0.15, 1);
+    OLED_ShowString(95, 6, str, 4);
 
     // OLED_ShowString(0, 2, "Eff:", 16);
     // if (Vol1Loop == 1 && Vol2Loop == 1) {
